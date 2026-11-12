@@ -1,0 +1,163 @@
+# Real-time Crypto Market Surveillance – full stack
+#   docker compose up -d --build
+# Dashboard: http://localhost:8501   Kafka UI: http://localhost:8080
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:3.9.1
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    retries: 12
+    start_period: 30s
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+  KAFKA_PROCESS_ROLES: "broker,controller"
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka1:9093,2@kafka2:9093,3@kafka3:9093"
+  KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+  KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+  KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+  KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+  KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+  KAFKA_MIN_INSYNC_REPLICAS: "2"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+  KAFKA_HEAP_OPTS: "-Xms384m -Xmx384m"
+
+x-app: &app
+  build: .
+  image: crypto-surveillance-app:latest
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    KAFKA_BOOTSTRAP: "kafka1:9092,kafka2:9092,kafka3:9092"
+    POSTGRES_DSN: "postgresql://surveillance:surveillance@postgres:5432/surveillance"
+  depends_on: &app-deps
+    kafka-init:
+      condition: service_completed_successfully
+
+services:
+  # ------------------------------------------------------------------ Kafka cluster (KRaft, no ZooKeeper)
+  kafka1:
+    <<: *kafka-common
+    hostname: kafka1
+    ports: ["29092:29092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "1"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka1:9092,PLAINTEXT_HOST://localhost:29092"
+
+  kafka2:
+    <<: *kafka-common
+    hostname: kafka2
+    ports: ["39092:29092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "2"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka2:9092,PLAINTEXT_HOST://localhost:39092"
+
+  kafka3:
+    <<: *kafka-common
+    hostname: kafka3
+    ports: ["49092:29092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "3"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka3:9092,PLAINTEXT_HOST://localhost:49092"
+
+  # Creates the topics once the cluster is healthy, then exits.
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        T=/opt/kafka/bin/kafka-topics.sh
+        B=kafka1:9092,kafka2:9092,kafka3:9092
+        $$T --bootstrap-server $$B --create --if-not-exists --topic trades.raw       --partitions 6 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=604800000 --config compression.type=producer
+        $$T --bootstrap-server $$B --create --if-not-exists --topic ohlcv.bars       --partitions 6 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=604800000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic market.anomalies --partitions 3 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=2592000000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic trades.dlq       --partitions 1 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=2592000000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic pipeline.metrics --partitions 1 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=86400000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic loadtest.trades  --partitions 6 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=3600000
+        $$T --bootstrap-server $$B --describe
+    restart: "no"
+
+  kafka-ui:
+    image: kafbat/kafka-ui:latest
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "surveillance"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka1:9092,kafka2:9092,kafka3:9092"
+    depends_on:
+      kafka-init: {condition: service_completed_successfully}
+
+  # ------------------------------------------------------------------ Serving layer
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: surveillance
+      POSTGRES_PASSWORD: surveillance
+      POSTGRES_DB: surveillance
+    ports: ["5433:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U surveillance -d surveillance"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ------------------------------------------------------------------ Producers (live data)
+  producer-coinbase:
+    <<: *app
+    command: ["python", "-m", "app.producer"]
+    environment:
+      <<: *app-env
+      EXCHANGE: coinbase
+
+  producer-kraken:
+    <<: *app
+    command: ["python", "-m", "app.producer"]
+    environment:
+      <<: *app-env
+      EXCHANGE: kraken
+
+  # ------------------------------------------------------------------ Stream processing (scalable)
+  detector:
+    <<: *app
+    command: ["python", "-m", "app.detector"]
+
+  # ------------------------------------------------------------------ Kafka -> Postgres
+  sink:
+    <<: *app
+    command: ["python", "-m", "app.sink"]
+    depends_on:
+      <<: *app-deps
+      postgres: {condition: service_healthy}
+
+  dashboard:
+    <<: *app
+    command: ["streamlit", "run", "app/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0",
+              "--server.headless=true", "--browser.gatherUsageStats=false"]
+    ports: ["8501:8501"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+volumes:
+  pg-data:
