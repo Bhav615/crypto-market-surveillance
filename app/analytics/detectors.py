@@ -63,7 +63,7 @@ class WhaleTradeDetector:
                     f"{t.side.upper()} ${t.notional:,.0f} of {t.symbol} on {t.exchange} "
                     f"(~{t.notional / typical:,.0f}x a typical trade)",
                     {"trade_id": t.trade_id, "price": t.price, "size": t.size, "side": t.side,
-                     "typical_notional": round(typical, 2)})
+                     "typical_notional": round(typical, 2), "source": t.source})
         st.add(x)
         return result
 
@@ -74,11 +74,19 @@ class PriceSpikeDetector:
         self.window, self.min_history, self.z, self.min_bps = window, min_history, z, min_bps
         self.stats: dict[tuple[str, str], RollingStats] = {}
         self.last_close: dict[tuple[str, str], float] = {}
+        self.last_start: dict[tuple[str, str], int] = {}
 
     def on_bar(self, b: Bar) -> Anomaly | None:
         prev = self.last_close.get(b.key)
+        prev_start = self.last_start.get(b.key)
         self.last_close[b.key] = b.close
+        self.last_start[b.key] = b.bar_start
         if prev is None:
+            return None
+        if b.bar_start - prev_start > 6 * b.bar_seconds * 1000:
+            # Long gap (downtime, laptop asleep, illiquid market): a return across the gap is not a
+            # 10-second move, so don't compare. Restart the volatility history for this market.
+            self.stats.pop(b.key, None)
             return None
         r = math.log(b.close / prev)
         st = self.stats.setdefault(b.key, RollingStats(self.window))

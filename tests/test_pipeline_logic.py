@@ -152,3 +152,13 @@ def test_anomaly_ids_are_deterministic():
             d.on_trade(trade(i, 100, 0.01 * (1 + i % 3)))
         ids.append(d.on_trade(trade(999, 100, 100)).anomaly_id)
     assert ids[0] == ids[1]
+
+
+def test_price_spike_ignores_returns_across_downtime():
+    spike = PriceSpikeDetector(window=100, min_history=20, z=4, min_bps=10)
+    price = 60_000.0
+    for i in range(40):
+        price += [1, -1, 2, -2][i % 4]
+        spike.on_bar(_bar(i * 10_000, price, 100_000))
+    # laptop asleep for 3 hours, price moved 2 %: must NOT be a 10-second spike
+    assert spike.on_bar(_bar(40 * 10_000 + 3 * 3600 * 1000, price * 1.02, 100_000)) is None

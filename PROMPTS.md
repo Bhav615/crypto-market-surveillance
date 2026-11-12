@@ -71,6 +71,18 @@ As required by the course rules, these are the prompts given to an AI code-gener
    cross-exchange arbitrage, market risk; Market; Pipeline & servers with live Kafka broker/replica
    status and service heartbeats). README sections on server failures and burst handling.
 
+19. > instead of doing give everything as updated and new i will directly replace the old one
+20. (screenshot: `docker compose up` "no configuration file provided" – wrong folder)
+21. > its done what next
+22. (screenshots: dashboard "Pipeline & servers" and "Business objectives" pages)
+23. > my github username is Bhav615
+24. (screenshots: GitHub repository before and after the push)
+25. (output of `app.tools.report` after 4 days with the laptop switched off in between)
+
+   Result of prompt 25: price-spike detector no longer compares prices across a long gap (laptop
+   asleep / downtime); whale alerts record whether the trade was live or backfilled; the report
+   now measures a time window (`--minutes`, default 60) instead of the whole history.
+
 ## Further prompts
 
 <!-- Add every further prompt you use here, in order. -->

@@ -118,7 +118,10 @@ docker compose logs -f detector                # "ANOMALY ..." lines appear as t
 ```bash
 docker compose exec sink python -m app.tools.report
 ```
-This prints throughput, latency percentiles, completeness per market, the duplicate count and anomaly counts.
+This prints throughput, latency percentiles, completeness per market, the duplicate count and anomaly counts
+for the **last 60 minutes** (use `--minutes 180` for a longer window). Report on a period in which the
+stack was running continuously. If the laptop was off or asleep, trades from that time were never
+collected, and an all-history completeness figure would measure that downtime, not the pipeline.
 
 ### Run the unit tests
 ```bash
